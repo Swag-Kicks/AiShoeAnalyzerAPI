@@ -8,6 +8,7 @@ from PIL import Image, ImageDraw, ImageFont
 import numpy as np
 import os
 import cloudinary.uploader
+from torchvision import transforms
 import numpy as np
 import pathlib
 import threading
@@ -17,7 +18,6 @@ import re
 temp = pathlib.PosixPath
 pathlib.PosixPath = pathlib.WindowsPath
 import pickle
-
 import tensorflow as tf
 
 #pip install opencv-python-headless
@@ -28,7 +28,7 @@ app = Flask(__name__)
 categories=['1','2','3','4','5']
 
 # Load architecture and weights from the pickle file
-with open('ShoeAngle_model.pkl', 'rb') as f:
+with open('ShoeAngle.pkl', 'rb') as f:
     model_json, model_weights = pickle.load(f)
 
 # Reconstruct the model from the architecture
@@ -39,7 +39,6 @@ shoeAngle.set_weights(model_weights)
 
 # Compile the model (optional, depending on your use case)
 shoeAngle.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
-
 
 brand = torch.hub.load('ultralytics/yolov5', 'custom', path='brand.pt')
 brand.eval()
@@ -52,7 +51,6 @@ shoe.eval()
 brand_data = []
 component_data=[]
 damage_data=[]
-uploadUrl=[]
 output={}
 
 @app.route('/', methods=['GET'])
@@ -206,10 +204,10 @@ def DiscardDamage(image_data):
 def find_damage_component(components, damages):
     result = {}
     used_damages = set()
-    for component_name, component_bbox in components.items():
+    for component_name, component_bbox in components.items(): #midsole
         max_overlap = 0
         associated_damage = None
-        for damage_name, damage_bbox in damages.items():
+        for damage_name, damage_bbox in damages.items(): 
             # Calculate overlap area
             overlap = calculate_overlap(component_bbox, damage_bbox)
             # Calculate percentage of overlap relative to the damage box area
@@ -269,10 +267,8 @@ def remove_empty_components(image_data):
     return image_data
 
 
-def detect_thread(url,PAngle):
+def detect_thread(url,PAngle,uploadUrl):
   angles=['back','bottom','right','front','left']
-  component_data=[]
-  damage_data=[]
   cap = cv2.VideoCapture(url)
   ret, frame = cap.read()
   img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
@@ -332,7 +328,7 @@ def detect_thread(url,PAngle):
 
     else:
       print(f"Ignoring box with unexpected structure: {box}")
-#  print(drawn_image.size)
+  print(drawn_image.size)
   categorized_damage = {}
   categorized_components = {}
   damage_types = {0: 'tear', 1: 'scuff', 2: 'yellow', 3: 'spot'}
@@ -356,6 +352,31 @@ def detect_thread(url,PAngle):
       categorized_components[component_type].append(coordinates)
   
   output[angles[PAngle-1]]=categorized_components,categorized_damage
+  drawn_image.save("new.jpg", format="JPEG", quality=95)  
+  cloud_name = "dhar5ins3"
+  upload_preset = "Areesha"  # Replace with your upload preset
+
+# Path to the image file you want to upload
+  file_path = 'new.jpg'
+# Prepare the data to be sent in the request
+  cloudinary.config(
+    cloud_name=cloud_name,
+    api_key="233473846544455",
+    api_secret="wnCkeNdsv_Ajm15ToG2YJ-jEFhc"
+  )
+    
+  try:
+    # Upload image to Cloudinary
+    upload_result = cloudinary.uploader.upload(file_path, upload_preset=upload_preset)
+
+    # Print the URL of the uploaded image
+    print("Image uploaded successfully:")
+    image_url=upload_result['secure_url']
+    uploadUrl.append(image_url)
+    os.remove("new.jpg")
+    print(component_data)
+  except Exception as e:
+    image_url="Error uploading image:", e
 
 def predict_from_image(image):
     img_array = prepare_image(image)
@@ -364,7 +385,6 @@ def predict_from_image(image):
 
 @app.route('/check_angle',methods=['POST'])
 def check_angle():
-  uploadUrl=[]
   data = request.get_json()
   url = data.get('image_url')
   angle=data.get('angle')
@@ -387,117 +407,124 @@ def check_angle():
 
 @app.route('/get_data', methods=['POST'])
 def get_data():
-  print("request received")
-  image_url=""
-  shoeangles=[]
-  anglecount=0
-  try:
-    data = request.get_json()
-    urls = data.get('image_url')
-    for url in urls:#check for each shoe
-      if (is_url_image(url) == False):
-        print(False)
-        return jsonify({'error: ': 'Invalid image URL'}), 400
-      cap = cv2.VideoCapture(url)
-      ret, frame = cap.read()
-      img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-      shoeResult=shoe(img)
-      if(len(shoeResult)==0):
-        return jsonify({'error: ':'All links are not Shoe'}),402
+    print("request received")
+    uploadUrl = []
+    image_url = ""
+    shoeangles = []
+    anglecount = 0
+    try:
+        data = request.get_json()
+        urls = data.get('image_url')
+        
+        # Check for invalid URLs and ensure all are shoe images
+        for url in urls:
+            if not is_url_image(url):
+                return jsonify({'error': 'Invalid image URL'}), 400
+            cap = cv2.VideoCapture(url)
+            ret, frame = cap.read()
+            img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+            shoeResult = shoe(img)
+            if len(shoeResult) == 0:
+                return jsonify({'error': 'All links are not Shoe'}), 400
 
-    #check for each angle
-    for url in urls:
-      if (is_url_image(url) == False):
-        print(False)
-        return jsonify({'error: ': 'Invalid image URL'}), 400
+        # Check for angles and validate them
+        for url in urls:
+            if not is_url_image(url):
+                return jsonify({'error': 'Invalid image URL'}), 400
 
-      cap = cv2.VideoCapture(url)
-      ret, frame = cap.read()
-      img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-      resultArray = predict_from_image(img)
-      predicted_class=categories[np.argmax(resultArray,axis=1)[0]]
-      print(predicted_class)
-      if(int(predicted_class) not in shoeangles):
-        anglecount=anglecount+1
-      shoeangles.append(int(predicted_class))
-    print(anglecount)
-    if(not anglecount>=4):
-      return jsonify({'error: ':'Not all angles Found'}),401
-    threads=[]
-    i=0
-    target_angles = [1, 2, 3, 4, 5]
+            cap = cv2.VideoCapture(url)
+            ret, frame = cap.read()
+            img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+            resultArray = predict_from_image(img)
+            predicted_class = categories[np.argmax(resultArray, axis=1)[0]]
+            print(predicted_class)
+            if int(predicted_class) not in shoeangles:
+                anglecount = anglecount + 1
+            shoeangles.append(int(predicted_class))
+        
+        # Check if all 5 angles (1 to 5) are present
+        if not anglecount >= 4:
+            return jsonify({'error': 'Not all angles Found'}), 400
+        
+        threads = []
+        i = 0
+        target_angles = [1, 2, 3, 4, 5]
 
+        # Replace missing angles with duplicates of existing ones
+        for angle in target_angles:
+            if angle not in shoeangles:
+                for i, existing_angle in enumerate(shoeangles):
+                    if existing_angle == angle - 1 or existing_angle == angle + 1:
+                        shoeangles[i] = angle
+                        break
 
-    # Check if all target angles are present in the list
+        print(shoeangles)
 
-    for angle in target_angles:
+        # Start threading for image detection
+        for url in urls:
+            if not is_url_image(url):
+                return jsonify({'error': 'Invalid image URL'}), 400
+            print(int(shoeangles[i]))
+            thread = threading.Thread(target=detect_thread, args=(url, int(shoeangles[i]), uploadUrl,))
+            i = i + 1
+            threads.append(thread)
+            thread.start()
 
-        if angle not in shoeangles:
+        # Wait for all threads to complete
+        for thread in threads:
+            thread.join()
 
-            # If a target angle is missing, replace it with a duplicate of an existing angle
+        # Process and filter image data
+        result = {}
+        image_data = {}
+        data = output
+        for key, (part_data, defect_data) in data.items():
+            part_dict = {k: [int(x) for x in v[0]] for k, v in part_data.items()}
+            defect_dict = {k: [int(x) for x in v[0]] for k, v in defect_data.items()}
+            image_data[key] = (part_dict, defect_dict)
 
-            for i, existing_angle in enumerate(shoeangles):
+        data = image_data
 
-                if existing_angle == angle - 1 or existing_angle == angle + 1:
+        # Find and organize damage components
+        for image_name, (components, damages) in data.items():
+            result[image_name] = find_damage_component(components, damages)
 
-                    shoeangles[i] = angle
+        print("Result before discard:: ", result)
 
-                    break
+        # Filter and clean up damage data
+        resultafterdiscard = DiscardDamage(result)
 
-    
-    print(shoeangles)
-    for url in urls:
-      #multithreading here
-      if (is_url_image(url) == False):
-        print(False)
-        return jsonify({'error: ': 'Invalid image URL'}), 400
-      print(int(shoeangles[i]))
-      thread=threading.Thread(target=detect_thread,args=(url,int(shoeangles[i]),))
-      i=i+1
-      threads.append(thread)
-      thread.start()
-    for thread in threads:
-      thread.join()
-    # Process the image data
-    result = {}
-    image_data={}
-    data=output
-    for key, (part_data, defect_data) in data.items():
-      part_dict = {k: [int(x) for x in v[0]] for k, v in part_data.items()}
-      defect_dict = {k: [int(x) for x in v[0]] for k, v in defect_data.items()}
-      image_data[key] = (part_dict, defect_dict)
-    data=image_data
+        print("Result after discard (same damage on same component):: ", resultafterdiscard)
 
-    for image_name, (components, damages) in data.items():
-        result[image_name] = find_damage_component(components, damages)
+        image_data_discard = compare_damages(resultafterdiscard)
+        image_data_discard = remove_empty_components(image_data_discard)
 
-    # Print the result on the console
-    print("Result before discard:: ",result)
-    resultafterdiscard = DiscardDamage(result)
-    
-    print("Result after discard (same damage on same component):: ",resultafterdiscard)
+        print("Result after discard (same damage on different image of same component): ", image_data_discard)
 
-    image_data_discard = compare_damages(resultafterdiscard )
-    image_data_discard = remove_empty_components(image_data_discard)
-    print("Result after discard (same damage on different image of same component): ",image_data_discard)
-    image_data = image_data_discard
+        image_data = image_data_discard
 
-    # Calculate the condition of the shoes
-    updated_image_data = calculate_condition(image_data)
+        # Calculate shoe condition based on damage
+        updated_image_data = calculate_condition(image_data)
 
-    # Calculate the overall condition score
-    overall_condition = calculate_overall_condition(updated_image_data)
+        # Calculate overall condition score
+        overall_condition = calculate_overall_condition(updated_image_data)
 
-    # Round down the overall condition to the nearest multiple of 10
-    overall_condition = math.floor(overall_condition / (len(updated_image_data) * 10) * 10)
+        # Round overall condition to nearest 10
+        overall_condition = math.floor(overall_condition / (len(updated_image_data) * 10) * 10)
+        
+        # Prepare API response
+        api_response = {
+            'brand': brand_data,
+            'overall_condition': overall_condition,
+            'url': uploadUrl,
+            'output': image_data
+        }
+        clear_data()
+        return jsonify(api_response), 200
 
+    except Exception as e:
+        return jsonify({'error': "Images are not Shoe"}), 500
 
-    # Construct the API response
-    api_response = {'brand': brand_data,'overall_condition':overall_condition,'url':uploadUrl,'output':data}
-    return jsonify(api_response), 200
-
-  except Exception as e:
-    return jsonify({'error': str(e)}), 500
 
 def calculate_condition(image_data):
     # Define area thresholds for small, medium, and large areas
@@ -582,6 +609,11 @@ def calculate_overall_condition_api():
 
     return jsonify(response_data)
 
+def clear_data():
+    damage_data=[]
+    component_data=[]
+    brand_data=[]
+    output={}
 
 if __name__ == '__main__':
   app.run(host='0.0.0.0', port=8080)
