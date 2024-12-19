@@ -93,7 +93,6 @@ stripe==9.12.0
 sympy==1.13.0
 tbb==2021.13.0
 tensorboard==2.17.0
-tensorboard-data-server==0.7.2
 tensorflow==2.17.0
 tensorflow-intel==2.17.0
 termcolor==2.4.0
