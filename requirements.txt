@@ -65,8 +65,8 @@ pandas==2.2.2
 pefile==2023.2.7
 pillow==10.4.0
 protobuf==4.25.3
-psutil==6.0.0
 psycopg2
+psutil==6.0.0
 py-cpuinfo==9.0.0
 Pygments==2.17.2
 pyinstaller==6.8.0
